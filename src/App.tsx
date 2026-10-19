@@ -1,6 +1,15 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "./App.css";
 import { useTelegram } from "./useTelegram";
+
+type SharedCard = {
+  share_id: string;
+  occasion: string;
+  template: string;
+  recipient: string;
+  sender: string;
+  message: string;
+};
 
 const occasions = [
   { id: "birthday", icon: "🎂", title: "تولد", subtitle: "یک روز خاص" },
@@ -37,6 +46,58 @@ function App() {
   const [sender, setSender] = useState("");
   const [message, setMessage] = useState(defaultMessages.birthday);
   const [notice, setNotice] = useState("");
+
+  const sharedCardId = new URLSearchParams(window.location.search).get("card");
+
+  const [sharedCard, setSharedCard] = useState<SharedCard | null>(null);
+  const [sharedCardLoading, setSharedCardLoading] = useState(
+    Boolean(sharedCardId),
+  );
+  const [sharedCardError, setSharedCardError] = useState("");
+
+  useEffect(() => {
+    const shareId = new URLSearchParams(window.location.search).get("card");
+
+    if (!shareId) return;
+
+    let cancelled = false;
+
+    async function loadCard() {
+
+      try {
+        const response = await fetch(
+          `/api/cards?shareId=${encodeURIComponent(shareId!)}`,
+        );
+
+        const result = await response.json();
+
+        if (!response.ok) {
+          throw new Error(result.error || "دریافت کارت ناموفق بود.");
+        }
+
+        if (!cancelled) {
+          setSharedCard(result.card);
+        }
+      } catch {
+        if (!cancelled) {
+          setSharedCardError(
+            "این کارت پیدا نشد یا در دریافت آن مشکلی پیش آمد.",
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setSharedCardLoading(false);
+        }
+      }
+    }
+
+    void loadCard();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const { isTelegram, user } = useTelegram();
 
   const selectedOccasion = occasions.find((item) => item.id === occasion)!;
@@ -49,35 +110,196 @@ function App() {
   }
 
   async function shareCard() {
-    const greeting = `${selectedOccasion.icon} ${selectedOccasion.title}${
-      recipient.trim() ? ` برای ${recipient.trim()}` : ""
-    }\n\n${message.trim()}${
-      sender.trim() ? `\n\nبا مهر، ${sender.trim()}` : ""
-    }\n\nساخته‌شده با GiftNote`;
+    setNotice("");
+
+    let cardUrl: string;
+
+    try {
+      const response = await fetch("/api/cards", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          occasion,
+          template,
+          recipient: recipient.trim(),
+          sender: sender.trim(),
+          message: message.trim(),
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || typeof result.shareId !== "string") {
+        throw new Error(result.error || "ذخیره کارت ناموفق بود.");
+      }
+
+      cardUrl = `${window.location.origin}${window.location.pathname}?card=${encodeURIComponent(result.shareId)}`;
+    } catch {
+      setNotice("ذخیره کارت ناموفق بود. اتصال API و تنظیمات سرور را بررسی کن.");
+      return;
+    }
 
     try {
       if (navigator.share) {
         await navigator.share({
           title: "یک پیام زیبا از GiftNote",
-          text: greeting,
+          text: "یک کارت زیبا برات ساختم 💌",
+          url: cardUrl,
         });
-        setNotice("پنجره اشتراک‌گذاری باز شد.");
+
+        setNotice("لینک اختصاصی کارت به اشتراک گذاشته شد.");
       } else {
-        await navigator.clipboard.writeText(greeting);
-        setNotice("پیام کپی شد؛ حالا می‌تونی در تلگرام بفرستیش.");
+        await navigator.clipboard.writeText(cardUrl);
+        setNotice("لینک اختصاصی کارت کپی شد؛ حالا در تلگرام بفرستش.");
       }
     } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") return;
+      if (error instanceof Error && error.name === "AbortError") {
+        setNotice(`کارت ذخیره شد. لینک آن: ${cardUrl}`);
+        return;
+      }
 
       try {
-        await navigator.clipboard.writeText(greeting);
-        setNotice("پیام کپی شد؛ می‌تونی در تلگرام ارسالش کنی.");
+        await navigator.clipboard.writeText(cardUrl);
+        setNotice("لینک اختصاصی کارت کپی شد.");
       } catch {
-        setNotice(
-          "اشتراک‌گذاری در دسترس نیست. صفحه را در یک مرورگر امن باز کن.",
-        );
+        setNotice(`کارت ذخیره شد. لینک آن: ${cardUrl}`);
       }
     }
+  }
+
+  if (sharedCardId) {
+    if (sharedCardLoading) {
+      return (
+        <main className="app-shell" dir="rtl">
+          <p role="status">در حال بازکردن کارت زیبای تو... 💌</p>
+        </main>
+      );
+    }
+
+    if (sharedCardError || !sharedCard) {
+      return (
+        <main className="app-shell" dir="rtl">
+          <section className="preview-panel">
+            <h2>کارت پیدا نشد</h2>
+            <p>{sharedCardError || "این کارت در دسترس نیست."}</p>
+            <a href="/">ساخت یک کارت جدید</a>
+          </section>
+        </main>
+      );
+    }
+
+    const cardOccasion = occasions.find(
+      (item) => item.id === sharedCard.occasion,
+    );
+
+    const cardTemplate = templates.find(
+      (item) => item.id === sharedCard.template,
+    );
+
+    if (!cardOccasion || !cardTemplate) {
+      return (
+        <main className="app-shell" dir="rtl">
+          <p>اطلاعات این کارت معتبر نیست.</p>
+        </main>
+      );
+    }
+
+    return (
+      <main className="app-shell" dir="rtl">
+        <header className="topbar">
+          <a className="brand" href="/" aria-label="GiftNote صفحه اصلی">
+            <span className="brand-mark">✳</span>
+            gift<span className="brand-light">note</span>
+          </a>
+          <span className="topbar-label">یک حس خوب، در چند کلمه</span>
+        </header>
+
+        <section
+          className="preview-panel"
+          style={{
+            maxWidth: "620px",
+            width: "calc(100% - 32px)",
+            margin: "40px auto",
+          }}
+        >
+          <div className="preview-topline">
+            <span>یک پیام برای تو</span>
+            <span className="live-indicator">
+              <i /> MADE WITH LOVE
+            </span>
+          </div>
+
+          <div className="card-stage">
+            <article className={`greeting-card ${cardTemplate.className}`}>
+              <span className="card-decoration decoration-top">
+                {cardTemplate.decoration}
+              </span>
+
+              <span className="card-kicker">A LITTLE SOMETHING FOR YOU</span>
+
+              <div className="card-illustration" aria-hidden="true">
+                {cardTemplate.id === "rose"
+                  ? "🌹"
+                  : cardTemplate.id === "night"
+                    ? "🌙"
+                    : "🌷"}
+              </div>
+
+              <span className="card-occasion">
+                {cardOccasion.icon} {cardOccasion.title}
+              </span>
+
+              <h3>
+                {sharedCard.recipient
+                  ? `برای ${sharedCard.recipient} عزیز`
+                  : "برای یک آدم دوست‌داشتنی"}
+              </h3>
+
+              <div className="card-divider">
+                <span>✳</span>
+              </div>
+
+              <p className="card-message">{sharedCard.message}</p>
+
+              <div className="card-signature">
+                {sharedCard.sender || "با عشق و مهر"}
+              </div>
+
+              <span className="card-decoration decoration-bottom">
+                {cardTemplate.decoration}
+              </span>
+            </article>
+          </div>
+
+          <p className="preview-hint">
+            <span>✧</span> این کارت با عشق در GiftNote ساخته شده.
+          </p>
+
+          <a
+            href="/"
+            className="share-button"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              textDecoration: "none",
+            }}
+          >
+            <span>ساخت کارت خودم</span>
+            <span className="share-icon">↗</span>
+          </a>
+        </section>
+
+        <footer className="footer">
+          <span className="footer-brand">
+            gift<span>note</span> ✳
+          </span>
+          <span>ساخته‌شده برای لحظه‌هایی که مهمن.</span>
+        </footer>
+      </main>
+    );
   }
 
   return (
